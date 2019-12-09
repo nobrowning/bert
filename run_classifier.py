@@ -77,9 +77,9 @@ flags.DEFINE_bool(
 
 flags.DEFINE_integer("train_batch_size", 32, "Total batch size for training.")
 
-flags.DEFINE_integer("eval_batch_size", 8, "Total batch size for eval.")
+flags.DEFINE_integer("eval_batch_size", 32, "Total batch size for eval.")
 
-flags.DEFINE_integer("predict_batch_size", 8, "Total batch size for predict.")
+flags.DEFINE_integer("predict_batch_size", 32, "Total batch size for predict.")
 
 flags.DEFINE_float("learning_rate", 5e-5, "The initial learning rate for Adam.")
 
@@ -371,6 +371,83 @@ class ColaProcessor(DataProcessor):
         label = tokenization.convert_to_unicode(line[1])
       examples.append(
           InputExample(guid=guid, text_a=text_a, text_b=None, label=label))
+    return examples
+
+
+class MagProcessor(DataProcessor):
+  """Processor for the CoLA data set (GLUE version)."""
+
+  def get_train_examples(self, data_dir):
+    return self._create_train_examples(open(data_dir + '/mag_balance_dataset.txt', 'r'), "train")
+
+  def get_dev_examples(self, data_dir):
+    return self._create_dev_examples(open(data_dir + '/mag_balance_dataset.txt', 'r'), "dev")
+
+  def get_test_examples(self, data_dir):
+    return self._create_test_examples(open(data_dir + '/mag_balance_dataset.txt', 'r'), "test")
+
+  def get_labels(self):
+    return ['Materials Science', 'Economics', 'Biology', 'Medicine', 'Engineering', 'Geography',
+            'Geology', 'Mathematics', 'Business', 'Chemistry', 'Physics', 'Computer Science']
+
+  def _create_train_examples(self, dataset_file, set_type):
+
+    mag_dataset = dataset_file
+    examples = []
+    for _ in range(240000):
+      next(mag_dataset)
+
+    index = 0
+    for line in mag_dataset:
+      guid = "%s-%s" % (set_type, index)
+      pos = line.find('\t')
+      text_a = tokenization.convert_to_unicode(line[pos + 1:])
+      label = tokenization.convert_to_unicode(line[:pos])
+      examples.append(
+        InputExample(guid=guid, text_a=text_a, text_b=None, label=label))
+      index += 1
+    mag_dataset.close()
+    return examples
+
+  def _create_test_examples(self, dataset_file, set_type):
+
+    mag_dataset = dataset_file
+    examples = []
+    for _ in range(120000):
+      next(mag_dataset)
+
+    index = 0
+    MAX_LINE_COUNT = 120000
+    for line in mag_dataset:
+      guid = "%s-%s" % (set_type, index)
+      pos = line.find('\t')
+      text_a = tokenization.convert_to_unicode(line[pos + 1:])
+      examples.append(
+        InputExample(guid=guid, text_a=text_a, text_b=None, label=None))
+      index += 1
+      if index >= MAX_LINE_COUNT:
+        break
+    mag_dataset.close()
+    return examples
+
+  def _create_dev_examples(self, dataset_file, set_type):
+
+    mag_dataset = dataset_file
+    examples = []
+
+    index = 0
+    MAX_LINE_COUNT = 120000
+    for line in mag_dataset:
+      guid = "%s-%s" % (set_type, index)
+      pos = line.find('\t')
+      text_a = tokenization.convert_to_unicode(line[pos + 1:])
+      label = tokenization.convert_to_unicode(line[:pos])
+      examples.append(
+        InputExample(guid=guid, text_a=text_a, text_b=None, label=label))
+      index += 1
+      if index >= MAX_LINE_COUNT:
+        break
+    mag_dataset.close()
     return examples
 
 
@@ -674,10 +751,16 @@ def model_fn_builder(bert_config, num_labels, init_checkpoint, learning_rate,
       train_op = optimization.create_optimizer(
           total_loss, learning_rate, num_train_steps, num_warmup_steps, use_tpu)
 
+      predictions = tf.argmax(logits, axis=-1, output_type=tf.int32)
+      accuracy = tf.metrics.accuracy(labels=label_ids, predictions=predictions, weights=is_real_example)
+      logging_hook = tf.train.LoggingTensorHook({"eval_loss": total_loss, "accuracy": accuracy[1]}, every_n_iter=100)
+      tf.summary.scalar('accuracy', accuracy[1])
+
       output_spec = tf.contrib.tpu.TPUEstimatorSpec(
           mode=mode,
           loss=total_loss,
           train_op=train_op,
+          training_hooks=[logging_hook],
           scaffold_fn=scaffold_fn)
     elif mode == tf.estimator.ModeKeys.EVAL:
 
@@ -788,6 +871,7 @@ def main(_):
       "mnli": MnliProcessor,
       "mrpc": MrpcProcessor,
       "xnli": XnliProcessor,
+      "mag": MagProcessor,
   }
 
   tokenization.validate_case_matches_checkpoint(FLAGS.do_lower_case,
@@ -866,8 +950,8 @@ def main(_):
 
   if FLAGS.do_train:
     train_file = os.path.join(FLAGS.output_dir, "train.tf_record")
-    file_based_convert_examples_to_features(
-        train_examples, label_list, FLAGS.max_seq_length, tokenizer, train_file)
+    # file_based_convert_examples_to_features(
+    #     train_examples, label_list, FLAGS.max_seq_length, tokenizer, train_file)
     tf.logging.info("***** Running training *****")
     tf.logging.info("  Num examples = %d", len(train_examples))
     tf.logging.info("  Batch size = %d", FLAGS.train_batch_size)
@@ -892,8 +976,8 @@ def main(_):
         eval_examples.append(PaddingInputExample())
 
     eval_file = os.path.join(FLAGS.output_dir, "eval.tf_record")
-    file_based_convert_examples_to_features(
-        eval_examples, label_list, FLAGS.max_seq_length, tokenizer, eval_file)
+    # file_based_convert_examples_to_features(
+    #     eval_examples, label_list, FLAGS.max_seq_length, tokenizer, eval_file)
 
     tf.logging.info("***** Running evaluation *****")
     tf.logging.info("  Num examples = %d (%d actual, %d padding)",
